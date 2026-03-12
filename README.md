@@ -6,3 +6,12 @@
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ВАШ_ЛОГИН/openwrt-wan-ip-check/main/install.sh | sh
+```
+## Просмотр логов
+```sh
+logread -f | grep wan-ip-check
+```
+или
+```sh
+tail -f /var/log/wan_ip_check.log
+```
