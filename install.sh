@@ -5,7 +5,7 @@
 
 set -e
 
-REPO="ВАШ_ЛОГИН/openwrt-wan-ip-check"
+REPO="Erridium/openwrt-wan-ip-check"
 BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/$REPO/$BRANCH"
 
@@ -39,7 +39,7 @@ read -p "Имя WAN интерфейса [$DEFAULT_WAN]: " WAN_INTERFACE
 WAN_INTERFACE=${WAN_INTERFACE:-$DEFAULT_WAN}
 
 # Target network
-DEFAULT_TARGET="79.105.0.0/16"
+DEFAULT_TARGET="109.108.32.0/19"
 read -p "Желаемая сеть (CIDR) [$DEFAULT_TARGET]: " TARGET_NETWORK
 TARGET_NETWORK=${TARGET_NETWORK:-$DEFAULT_TARGET}
 
@@ -53,7 +53,7 @@ if [ -z "$UNWANTED_NETWORK" ]; then
 fi
 
 # Check interval
-DEFAULT_INTERVAL=60
+DEFAULT_INTERVAL=120
 read -p "Интервал проверки (секунд) [$DEFAULT_INTERVAL]: " CHECK_INTERVAL
 CHECK_INTERVAL=${CHECK_INTERVAL:-$DEFAULT_INTERVAL}
 
