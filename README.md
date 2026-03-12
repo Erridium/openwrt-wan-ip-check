@@ -5,7 +5,7 @@
 ## Установка одной командой
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ВАШ_ЛОГИН/openwrt-wan-ip-check/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Erridium/openwrt-wan-ip-check/main/install.sh | sh
 ```
 ## Просмотр логов
 ```sh
