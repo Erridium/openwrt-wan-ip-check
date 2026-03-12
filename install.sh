@@ -26,54 +26,55 @@ chmod +x /usr/bin/check_wan_ip.sh
 echo ""
 echo "Настройка параметров (Enter - оставить значение по умолчанию)"
 
-# Перенаправляем весь последующий ввод на терминал,
-# чтобы read читал с клавиатуры, а не из пайпа.
-exec < /dev/tty
+# Функция для чтения с терминала
+read_from_tty() {
+    read "$1" < /dev/tty
+}
 
 # WAN interface
 DEFAULT_WAN="wan"
-echo -n "Имя WAN интерфейса [$DEFAULT_WAN]: "
-read WAN_INTERFACE
+printf "Имя WAN интерфейса [%s]: " "$DEFAULT_WAN"
+read_from_tty WAN_INTERFACE
 if [ -z "$WAN_INTERFACE" ]; then
     WAN_INTERFACE="$DEFAULT_WAN"
 fi
 
 # Target network
 DEFAULT_TARGET="79.105.0.0/16"
-echo -n "Желаемая сеть (CIDR) [$DEFAULT_TARGET]: "
-read TARGET_NETWORK
+printf "Желаемая сеть (CIDR) [%s]: " "$DEFAULT_TARGET"
+read_from_tty TARGET_NETWORK
 if [ -z "$TARGET_NETWORK" ]; then
     TARGET_NETWORK="$DEFAULT_TARGET"
 fi
 
 # Unwanted network (optional)
 DEFAULT_UNWANTED="100.64.0.0/10"
-echo -n "Нежелательная сеть (CIDR) для логирования (Enter - пропустить) [$DEFAULT_UNWANTED]: "
-read UNWANTED_NETWORK
+printf "Нежелательная сеть (CIDR) для логирования (Enter - пропустить) [%s]: " "$DEFAULT_UNWANTED"
+read_from_tty UNWANTED_NETWORK
 if [ -z "$UNWANTED_NETWORK" ]; then
     UNWANTED_NETWORK=""
 fi
 
 # Check interval
 DEFAULT_INTERVAL=60
-echo -n "Интервал проверки (секунд) [$DEFAULT_INTERVAL]: "
-read CHECK_INTERVAL
+printf "Интервал проверки (секунд) [%s]: " "$DEFAULT_INTERVAL"
+read_from_tty CHECK_INTERVAL
 if [ -z "$CHECK_INTERVAL" ]; then
     CHECK_INTERVAL="$DEFAULT_INTERVAL"
 fi
 
 # Restart delay
 DEFAULT_DELAY=60
-echo -n "Задержка после перезапуска интерфейса (секунд) [$DEFAULT_DELAY]: "
-read RESTART_DELAY
+printf "Задержка после перезапуска интерфейса (секунд) [%s]: " "$DEFAULT_DELAY"
+read_from_tty RESTART_DELAY
 if [ -z "$RESTART_DELAY" ]; then
     RESTART_DELAY="$DEFAULT_DELAY"
 fi
 
 # Log file
 DEFAULT_LOG="/var/log/wan_ip_check.log"
-echo -n "Файл лога [$DEFAULT_LOG]: "
-read LOG_FILE
+printf "Файл лога [%s]: " "$DEFAULT_LOG"
+read_from_tty LOG_FILE
 if [ -z "$LOG_FILE" ]; then
     LOG_FILE="$DEFAULT_LOG"
 fi
