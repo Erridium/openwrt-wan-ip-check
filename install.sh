@@ -89,9 +89,18 @@ echo "Настройка автозапуска через /etc/rc.local..."
 sed -i '/check_wan_ip.sh/d' /etc/rc.local
 sed -i "/exit 0/i /usr/bin/check_wan_ip.sh \&" /etc/rc.local
 
-# Запуск скрипта
-echo "Запуск скрипта..."
-/usr/bin/check_wan_ip.sh &
+# Запрос на немедленный запуск скрипта
+printf "Запустить скрипт сейчас? [y/N]: "
+read_from_tty RUN_NOW
+case "$RUN_NOW" in
+    [yY]|[yY][eE][sS])
+        echo "Запуск скрипта..."
+        /usr/bin/check_wan_ip.sh &
+        ;;
+    *)
+        echo "Скрипт не запущен. Он будет запущен автоматически после перезагрузки."
+        ;;
+esac
 
 echo "Установка завершена!"
 echo "Логи можно смотреть командой: logread | grep wan-ip-check"
