@@ -38,7 +38,7 @@ read_from_tty WAN_INTERFACE
 [ -z "$WAN_INTERFACE" ] && WAN_INTERFACE="$DEFAULT_WAN"
 
 # Target network
-DEFAULT_TARGET="79.105.0.0/16"
+DEFAULT_TARGET="109.108.32.0/19"
 printf "Желаемая сеть (CIDR) [%s]: " "$DEFAULT_TARGET"
 read_from_tty TARGET_NETWORK
 [ -z "$TARGET_NETWORK" ] && TARGET_NETWORK="$DEFAULT_TARGET"
