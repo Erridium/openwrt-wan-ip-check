@@ -26,6 +26,10 @@ chmod +x /usr/bin/check_wan_ip.sh
 echo ""
 echo "Настройка параметров (Enter - оставить значение по умолчанию)"
 
+# Перенаправляем весь последующий ввод на терминал,
+# чтобы read читал с клавиатуры, а не из пайпа.
+exec < /dev/tty
+
 # WAN interface
 DEFAULT_WAN="wan"
 echo -n "Имя WAN интерфейса [$DEFAULT_WAN]: "
