@@ -1,18 +1,8 @@
 #!/bin/sh
 
-# Если скрипт запущен через пайп (stdin не терминал), то сохраняем себя во временный файл и запускаем заново
-if [ ! -t 0 ]; then
-    # Создаём временный файл
-    tmp_script="/tmp/install_wan_ip.$$.sh"
-    # Копируем stdin в файл (весь скрипт)
-    cat > "$tmp_script"
-    chmod +x "$tmp_script"
-    # Запускаем временный скрипт с перенаправлением ввода с терминала
-    exec "$tmp_script" < /dev/tty
-    # После exec сюда не вернёмся
-fi
+# install.sh – установка скрипта проверки WAN IP на OpenWRT
+# Использование: curl -fsSL https://raw.githubusercontent.com/Erridium/openwrt-wan-ip-check/main/install.sh | sh
 
-# Дальше идёт основная часть скрипта (как раньше)
 set -e
 
 REPO="Erridium/openwrt-wan-ip-check"
@@ -36,53 +26,46 @@ chmod +x /usr/bin/check_wan_ip.sh
 echo ""
 echo "Настройка параметров (Enter - оставить значение по умолчанию)"
 
+# Функция для чтения с терминала (обход проблем с пайпом)
+read_from_tty() {
+    read "$1" < /dev/tty
+}
+
 # WAN interface
 DEFAULT_WAN="wan"
 printf "Имя WAN интерфейса [%s]: " "$DEFAULT_WAN"
-read WAN_INTERFACE
-if [ -z "$WAN_INTERFACE" ]; then
-    WAN_INTERFACE="$DEFAULT_WAN"
-fi
+read_from_tty WAN_INTERFACE
+[ -z "$WAN_INTERFACE" ] && WAN_INTERFACE="$DEFAULT_WAN"
 
 # Target network
 DEFAULT_TARGET="79.105.0.0/16"
 printf "Желаемая сеть (CIDR) [%s]: " "$DEFAULT_TARGET"
-read TARGET_NETWORK
-if [ -z "$TARGET_NETWORK" ]; then
-    TARGET_NETWORK="$DEFAULT_TARGET"
-fi
+read_from_tty TARGET_NETWORK
+[ -z "$TARGET_NETWORK" ] && TARGET_NETWORK="$DEFAULT_TARGET"
 
 # Unwanted network (optional)
 DEFAULT_UNWANTED="100.64.0.0/10"
 printf "Нежелательная сеть (CIDR) для логирования (Enter - пропустить) [%s]: " "$DEFAULT_UNWANTED"
-read UNWANTED_NETWORK
-if [ -z "$UNWANTED_NETWORK" ]; then
-    UNWANTED_NETWORK=""
-fi
+read_from_tty UNWANTED_NETWORK
+# если пусто - оставляем пустым
 
 # Check interval
 DEFAULT_INTERVAL=60
 printf "Интервал проверки (секунд) [%s]: " "$DEFAULT_INTERVAL"
-read CHECK_INTERVAL
-if [ -z "$CHECK_INTERVAL" ]; then
-    CHECK_INTERVAL="$DEFAULT_INTERVAL"
-fi
+read_from_tty CHECK_INTERVAL
+[ -z "$CHECK_INTERVAL" ] && CHECK_INTERVAL="$DEFAULT_INTERVAL"
 
 # Restart delay
 DEFAULT_DELAY=60
 printf "Задержка после перезапуска интерфейса (секунд) [%s]: " "$DEFAULT_DELAY"
-read RESTART_DELAY
-if [ -z "$RESTART_DELAY" ]; then
-    RESTART_DELAY="$DEFAULT_DELAY"
-fi
+read_from_tty RESTART_DELAY
+[ -z "$RESTART_DELAY" ] && RESTART_DELAY="$DEFAULT_DELAY"
 
 # Log file
 DEFAULT_LOG="/var/log/wan_ip_check.log"
 printf "Файл лога [%s]: " "$DEFAULT_LOG"
-read LOG_FILE
-if [ -z "$LOG_FILE" ]; then
-    LOG_FILE="$DEFAULT_LOG"
-fi
+read_from_tty LOG_FILE
+[ -z "$LOG_FILE" ] && LOG_FILE="$DEFAULT_LOG"
 
 # Создание конфигурационного файла
 CONFIG_FILE="/etc/wan-ip-check.conf"
@@ -103,9 +86,7 @@ echo "Конфигурация сохранена."
 
 # Настройка автозапуска через rc.local
 echo "Настройка автозапуска через /etc/rc.local..."
-# Удаляем предыдущие строки с вызовом скрипта
 sed -i '/check_wan_ip.sh/d' /etc/rc.local
-# Добавляем запуск перед exit 0
 sed -i "/exit 0/i /usr/bin/check_wan_ip.sh \&" /etc/rc.local
 
 # Запуск скрипта
@@ -116,8 +97,3 @@ echo "Установка завершена!"
 echo "Логи можно смотреть командой: logread | grep wan-ip-check"
 echo "Или tail -f $LOG_FILE"
 echo "Для изменения параметров отредактируйте $CONFIG_FILE и перезапустите скрипт."
-
-# Удаляем временный скрипт, если он был создан
-if [ -n "$tmp_script" ] && [ -f "$tmp_script" ]; then
-    rm "$tmp_script"
-fi
