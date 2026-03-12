@@ -5,15 +5,20 @@
 
 set -e
 
-REPO="Erridium/openwrt-wan-ip-check"
+REPO="ВАШ_ЛОГИН/openwrt-wan-ip-check"
 BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/$REPO/$BRANCH"
 
-# Цвета для вывода
+# Цвета для вывода (используются через переменные, но в ash надо быть осторожным с \033 в строке)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+
+# Проверка, что вывод в терминал, иначе не используем цвета
+if [ ! -t 1 ]; then
+    RED=''; GREEN=''; YELLOW=''; NC=''
+fi
 
 echo "${GREEN}Установка скрипта проверки WAN IP для OpenWRT${NC}"
 echo "------------------------------------------------"
@@ -35,37 +40,44 @@ echo "${GREEN}Настройка параметров (Enter - оставить 
 
 # WAN interface
 DEFAULT_WAN="wan"
-read -p "Имя WAN интерфейса [$DEFAULT_WAN]: " WAN_INTERFACE
-WAN_INTERFACE=${WAN_INTERFACE:-$DEFAULT_WAN}
+printf "Имя WAN интерфейса [%s]: " "$DEFAULT_WAN"
+read WAN_INTERFACE
+WAN_INTERFACE="${WAN_INTERFACE:-$DEFAULT_WAN}"
 
 # Target network
-DEFAULT_TARGET="109.108.32.0/19"
-read -p "Желаемая сеть (CIDR) [$DEFAULT_TARGET]: " TARGET_NETWORK
-TARGET_NETWORK=${TARGET_NETWORK:-$DEFAULT_TARGET}
+DEFAULT_TARGET="79.105.0.0/16"
+printf "Желаемая сеть (CIDR) [%s]: " "$DEFAULT_TARGET"
+read TARGET_NETWORK
+TARGET_NETWORK="${TARGET_NETWORK:-$DEFAULT_TARGET}"
 
 # Unwanted network (optional)
 DEFAULT_UNWANTED="100.64.0.0/10"
-read -p "Нежелательная сеть (CIDR) для логирования, Enter если не нужна [$DEFAULT_UNWANTED]: " UNWANTED_NETWORK
-UNWANTED_NETWORK=${UNWANTED_NETWORK:-$DEFAULT_UNWANTED}
-# Если пользователь ввел пустую строку, оставляем пустой
+printf "Нежелательная сеть (CIDR) для логирования, Enter если не нужна [%s]: " "$DEFAULT_UNWANTED"
+read UNWANTED_NETWORK
+# Если пользователь ввел пустую строку, то оставляем пустой (не подставляем дефолт)
 if [ -z "$UNWANTED_NETWORK" ]; then
     UNWANTED_NETWORK=""
+else
+    UNWANTED_NETWORK="${UNWANTED_NETWORK}"
 fi
 
 # Check interval
-DEFAULT_INTERVAL=120
-read -p "Интервал проверки (секунд) [$DEFAULT_INTERVAL]: " CHECK_INTERVAL
-CHECK_INTERVAL=${CHECK_INTERVAL:-$DEFAULT_INTERVAL}
+DEFAULT_INTERVAL=60
+printf "Интервал проверки (секунд) [%s]: " "$DEFAULT_INTERVAL"
+read CHECK_INTERVAL
+CHECK_INTERVAL="${CHECK_INTERVAL:-$DEFAULT_INTERVAL}"
 
 # Restart delay
 DEFAULT_DELAY=60
-read -p "Задержка после перезапуска интерфейса (секунд) [$DEFAULT_DELAY]: " RESTART_DELAY
-RESTART_DELAY=${RESTART_DELAY:-$DEFAULT_DELAY}
+printf "Задержка после перезапуска интерфейса (секунд) [%s]: " "$DEFAULT_DELAY"
+read RESTART_DELAY
+RESTART_DELAY="${RESTART_DELAY:-$DEFAULT_DELAY}"
 
 # Log file
 DEFAULT_LOG="/var/log/wan_ip_check.log"
-read -p "Файл лога [$DEFAULT_LOG]: " LOG_FILE
-LOG_FILE=${LOG_FILE:-$DEFAULT_LOG}
+printf "Файл лога [%s]: " "$DEFAULT_LOG"
+read LOG_FILE
+LOG_FILE="${LOG_FILE:-$DEFAULT_LOG}"
 
 # Создание конфигурационного файла
 CONFIG_FILE="/etc/wan-ip-check.conf"
