@@ -119,6 +119,7 @@ chmod +x /usr/bin/check_wan_ip.sh
 ## Автор
 
 [Erridium](https://github.com/Erridium)
+[deepseek](https://chat.deepseek.com)
 
 ---
 
