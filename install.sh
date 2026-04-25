@@ -67,6 +67,12 @@ printf "Файл лога [%s]: " "$DEFAULT_LOG"
 read_from_tty LOG_FILE
 [ -z "$LOG_FILE" ] && LOG_FILE="$DEFAULT_LOG"
 
+# Max log lines
+DEFAULT_MAX_LINES=100
+printf "Максимальное количество строк в лог-файле [%s]: " "$DEFAULT_MAX_LINES"
+read_from_tty MAX_LOG_LINES
+[ -z "$MAX_LOG_LINES" ] && MAX_LOG_LINES="$DEFAULT_MAX_LINES"
+
 # Создание конфигурационного файла
 CONFIG_FILE="/etc/wan-ip-check.conf"
 echo "Создание конфигурационного файла $CONFIG_FILE..."
@@ -80,6 +86,7 @@ UNWANTED_NETWORK="$UNWANTED_NETWORK"
 CHECK_INTERVAL="$CHECK_INTERVAL"
 RESTART_DELAY="$RESTART_DELAY"
 LOG_FILE="$LOG_FILE"
+MAX_LOG_LINES="$MAX_LOG_LINES"
 EOF
 
 echo "Конфигурация сохранена."
