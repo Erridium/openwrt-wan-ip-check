@@ -41,36 +41,52 @@ echo -e "${GREEN}${BOLD}=== OpenWRT WAN IP Checker ====${NC}"
 echo ""
 
 # --- Главное меню ---
+# --- Главное меню (замена существующего блока) ---
 if check_installed; then
     echo -e "${YELLOW}Обнаружена существующая установка.${NC}"
+    
+    # Определяем версии (если возможно)
+    local current_version="неизвестна"
+    local new_version="неизвестна"
+    if [ -f "$SCRIPT_DEST" ]; then
+        current_version=$(grep -oP 'Версия:\s*\K[0-9.]+' "$SCRIPT_DEST" 2>/dev/null || echo "неизвестна")
+    fi
+    
+    echo -e "Текущая версия: ${BOLD}${current_version}${NC}"
     echo ""
     echo -e "${BOLD}Выберите действие:${NC}"
-    echo "  1. Переустановить / обновить скрипт"
-    echo "  2. Удалить скрипт (сохранить конфигурацию и логи)"
-    echo "  3. Удалить скрипт полностью (с конфигурацией и логами)"
-    echo "  4. Выйти без изменений"
+    echo "  1. Обновить скрипт (с сохранением конфигурации и логов)"
+    echo "  2. Переустановить с нуля (конфиг будет сохранён как .bak, создан новый)"
+    echo "  3. Удалить скрипт (сохранить конфигурацию и логи)"
+    echo "  4. Удалить скрипт полностью (с конфигурацией и логами)"
+    echo "  5. Выйти без изменений"
     echo ""
-    printf "${CYAN}Ваш выбор [1-4]: ${NC}"
+    printf "${CYAN}Ваш выбор [1-5]: ${NC}"
     read -r choice
 
     case "$choice" in
         1)
-            echo ""
-            echo -e "${CYAN}▶ Выбрана переустановка${NC}\n"
-            # Останавливаем сервис перед обновлением
-            if [ -f "$INIT_DEST" ]; then
-                "$INIT_DEST" stop 2>/dev/null || true
-                "$INIT_DEST" disable 2>/dev/null || true
+            do_update
+            ;;
+        2)
+            # Останавливаем сервис
+            [ -f "$INIT_DEST" ] && "$INIT_DEST" stop 2>/dev/null || true
+            [ -f "$INIT_DEST" ] && "$INIT_DEST" disable 2>/dev/null || true
+            # Бэкапим старый конфиг
+            if [ -f "$CONFIG_DEST" ]; then
+                cp "$CONFIG_DEST" "${CONFIG_DEST}.bak.$(date +%Y%m%d%H%M%S)"
+                echo -e "${YELLOW}Старый конфиг сохранён как .bak${NC}"
+                rm -f "$CONFIG_DEST"
             fi
             do_install
             ;;
-        2)
+        3)
             do_uninstall "keep_config"
             ;;
-        3)
+        4)
             do_uninstall "full"
             ;;
-        4)
+        5)
             echo -e "${GREEN}Выход без изменений.${NC}"
             exit 0
             ;;
@@ -313,6 +329,136 @@ select_wan_interface() {
     
     echo ""
     echo -e "${GREEN}✓ Выбран интерфейс: ${BOLD}${WAN_INTERFACE}${NC}\n"
+}
+
+# ============================================================
+# ФУНКЦИЯ ОБНОВЛЕНИЯ (щадящий режим)
+# ============================================================
+do_update() {
+    echo ""
+    echo -e "${CYAN}${BOLD}=== Обновление скрипта check_wan_ip ====${NC}\n"
+    
+    # 1. Остановка сервиса
+    echo -e "${CYAN}▶ Остановка сервиса...${NC}"
+    if [ -f "$INIT_DEST" ]; then
+        "$INIT_DEST" stop 2>/dev/null || echo -e "${YELLOW}  Сервис не был запущен${NC}"
+        echo -e "${GREEN}✓ Сервис остановлен${NC}"
+    fi
+    
+    # 2. Сохранение текущего WAN_INTERFACE (чтобы не спрашивать заново)
+    local old_wan_interface="wan"
+    if [ -f "$CONFIG_DEST" ]; then
+        old_wan_interface=$(grep "^WAN_INTERFACE=" "$CONFIG_DEST" 2>/dev/null | \
+                           sed -e 's/^WAN_INTERFACE=//' -e 's/["'\'']//g' || echo "wan")
+        echo -e "${GREEN}✓ Текущий интерфейс: ${old_wan_interface}${NC}"
+    fi
+    
+    # 3. Скачивание новой версии основного скрипта
+    echo -e "${CYAN}▶ Загрузка новой версии ${SCRIPT_NAME}...${NC}"
+    curl -fsSL "${GITHUB_BASE}/${SCRIPT_NAME}" -o "${SCRIPT_DEST}.tmp" || {
+        echo -e "${RED}Ошибка загрузки скрипта. Проверьте подключение к интернету.${NC}"
+        # Восстанавливаем сервис, если был запущен
+        [ -f "$INIT_DEST" ] && "$INIT_DEST" start 2>/dev/null || true
+        exit 1
+    }
+    
+    if head -n 1 "${SCRIPT_DEST}.tmp" | grep -q "^#!/bin/sh"; then
+        mv "${SCRIPT_DEST}.tmp" "${SCRIPT_DEST}"
+        chmod +x "${SCRIPT_DEST}"
+        echo -e "${GREEN}✓ Основной скрипт обновлён: ${SCRIPT_DEST}${NC}"
+    else
+        rm -f "${SCRIPT_DEST}.tmp"
+        echo -e "${RED}Ошибка: Скачанный файл не является скриптом.${NC}"
+        [ -f "$INIT_DEST" ] && "$INIT_DEST" start 2>/dev/null || true
+        exit 1
+    fi
+    
+    # 4. Обновление init-скрипта
+    echo -e "${CYAN}▶ Обновление init-скрипта...${NC}"
+    cat > "$INIT_DEST" << 'INITEOF'
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+PROG=/usr/bin/check_wan_ip.sh
+
+start_service() {
+    procd_open_instance
+    procd_set_param command /bin/sh "$PROG"
+    procd_set_param respawn 3600 5 5
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}
+
+service_triggers() {
+    procd_add_reload_trigger "wan-ip-check"
+}
+
+reload_service() {
+    stop
+    start
+}
+INITEOF
+    chmod +x "$INIT_DEST"
+    echo -e "${GREEN}✓ Init-скрипт обновлён${NC}"
+    
+    # 5. Миграция конфига: добавляем новые параметры, сохраняя старые значения
+    echo -e "${CYAN}▶ Проверка конфигурации...${NC}"
+    if [ -f "$CONFIG_DEST" ]; then
+        # Список всех известных параметров и их значений по умолчанию
+        migrate_param() {
+            local param="$1"
+            local default_value="$2"
+            if ! grep -q "^${param}=" "$CONFIG_DEST" 2>/dev/null; then
+                echo "${param}=${default_value}" >> "$CONFIG_DEST"
+                echo -e "${YELLOW}  + Добавлен новый параметр: ${param}=${default_value}${NC}"
+            fi
+        }
+        
+        migrate_param "MAX_LOG_SIZE" "512"
+        migrate_param "MAX_LOG_LINES" "2000"
+        migrate_param "TARGET_NETWORKS" '"100.64.0.0/10 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"'
+        migrate_param "CHECK_INTERVAL" "120"
+        migrate_param "MAX_RESTARTS" "3"
+        migrate_param "RESTART_COOLDOWN" "300"
+        migrate_param "LOCK_TIMEOUT" "300"
+        migrate_param "LOG_FILE" '"/var/log/wan-ip-check.log"'
+        # WAN_INTERFACE не трогаем — сохраняем пользовательский выбор
+        
+        echo -e "${GREEN}✓ Конфигурация проверена, недостающие параметры добавлены${NC}"
+    else
+        echo -e "${YELLOW}⚠ Конфигурационный файл не найден. Будет создан новый.${NC}"
+        cat > "$CONFIG_DEST" << CONFEOF
+LOG_FILE="/var/log/wan-ip-check.log"
+MAX_LOG_SIZE=512
+MAX_LOG_LINES=2000
+WAN_INTERFACE="${old_wan_interface}"
+TARGET_NETWORKS="100.64.0.0/10 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
+CHECK_INTERVAL=120
+MAX_RESTARTS=3
+RESTART_COOLDOWN=300
+LOCK_TIMEOUT=300
+CONFEOF
+    fi
+    
+    # 6. Активация и запуск сервиса
+    echo ""
+    echo -e "${CYAN}▶ Активация сервиса...${NC}"
+    "$INIT_DEST" enable 2>/dev/null || true
+    echo -e "${GREEN}✓ Сервис в автозагрузке${NC}"
+    
+    echo -e "${CYAN}▶ Запуск сервиса...${NC}"
+    "$INIT_DEST" start
+    echo -e "${GREEN}✓ Сервис запущен${NC}"
+    
+    # 7. Финальное резюме
+    echo ""
+    echo -e "${GREEN}${BOLD}=== Обновление завершено! ===${NC}\n"
+    echo -e "Интерфейс: ${BOLD}${old_wan_interface}${NC}"
+    echo -e "Конфигурация: ${CYAN}${CONFIG_DEST}${NC}"
+    echo ""
+    echo "Проверьте статус: /etc/init.d/wan-ip-check status"
 }
 
 # ============================================================
