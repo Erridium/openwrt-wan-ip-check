@@ -1,115 +1,129 @@
 #!/bin/sh
-
-# install.sh – установка скрипта проверки WAN IP на OpenWRT
-# Использование: curl -fsSL https://raw.githubusercontent.com/Erridium/openwrt-wan-ip-check/main/install.sh | sh
-
+# ============================================================
+# Установщик check_wan_ip.sh для OpenWRT
+# ============================================================
 set -e
 
-REPO="Erridium/openwrt-wan-ip-check"
-BRANCH="main"
-BASE_URL="https://raw.githubusercontent.com/$REPO/$BRANCH"
+SCRIPT_NAME="check_wan_ip.sh"
+SCRIPT_DEST="/usr/bin/${SCRIPT_NAME}"
+CONFIG_DEST="/etc/wan-ip-check.conf"
+INIT_DEST="/etc/init.d/wan-ip-check"
+GITHUB_BASE="https://raw.githubusercontent.com/Erridium/openwrt-wan-ip-check/main"
 
-echo "Установка скрипта проверки WAN IP для OpenWRT"
-echo "----------------------------------------------"
+# Цвета для вывода (безопасные для busybox)
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
 
-# Проверка наличия curl
-if ! command -v curl >/dev/null 2>&1; then
-    echo "curl не найден. Устанавливаем..."
-    opkg update && opkg install curl
+echo -e "${GREEN}=== Установка скрипта проверки WAN IP ====${NC}"
+
+# Проверка root
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${RED}Ошибка: Скрипт должен быть запущен от root${NC}"
+    exit 1
 fi
 
-# Скачиваем основной скрипт
-echo "Скачивание основного скрипта..."
-curl -fsSL -o /usr/bin/check_wan_ip.sh "$BASE_URL/check_wan_ip.sh"
-chmod +x /usr/bin/check_wan_ip.sh
+# Проверка зависимостей
+echo "Проверка зависимостей..."
+MISSING=""
+for cmd in ip logger curl; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        MISSING="${MISSING} ${cmd}"
+    fi
+done
 
-echo ""
-echo "Настройка параметров (Enter - оставить значение по умолчанию)"
+if [ -n "$MISSING" ]; then
+    echo -e "${YELLOW}Установка недостающих пакетов:${MISSING}${NC}"
+    opkg update
+    for pkg in $MISSING; do
+        opkg install "$pkg"
+    done
+fi
 
-# Функция для чтения с терминала (обход проблем с пайпом)
-read_from_tty() {
-    read "$1" < /dev/tty
+# Скачивание основного скрипта
+echo "Загрузка ${SCRIPT_NAME}..."
+curl -fsSL "${GITHUB_BASE}/${SCRIPT_NAME}" -o "${SCRIPT_DEST}.tmp" || {
+    echo -e "${RED}Ошибка загрузки скрипта${NC}"
+    exit 1
 }
 
-# WAN interface
-DEFAULT_WAN="wan"
-printf "Имя WAN интерфейса [%s]: " "$DEFAULT_WAN"
-read_from_tty WAN_INTERFACE
-[ -z "$WAN_INTERFACE" ] && WAN_INTERFACE="$DEFAULT_WAN"
+# Проверка, что скачался именно скрипт, а не страница ошибки
+if head -n 1 "${SCRIPT_DEST}.tmp" | grep -q "^#!/bin/sh"; then
+    mv "${SCRIPT_DEST}.tmp" "${SCRIPT_DEST}"
+    chmod +x "${SCRIPT_DEST}"
+    echo -e "${GREEN}Основной скрипт установлен: ${SCRIPT_DEST}${NC}"
+else
+    rm -f "${SCRIPT_DEST}.tmp"
+    echo -e "${RED}Ошибка: Скачанный файл не является скриптом${NC}"
+    exit 1
+fi
 
-# Target network
-DEFAULT_TARGET="109.108.32.0/19"
-printf "Желаемая сеть (CIDR) [%s]: " "$DEFAULT_TARGET"
-read_from_tty TARGET_NETWORK
-[ -z "$TARGET_NETWORK" ] && TARGET_NETWORK="$DEFAULT_TARGET"
+# Создание конфигурации, если не существует
+if [ ! -f "$CONFIG_DEST" ]; then
+    echo "Создание конфигурационного файла..."
+    cat > "$CONFIG_DEST" << 'CONFEOF'
+LOG_FILE="/var/log/wan-ip-check.log"
+MAX_LOG_SIZE=512
+MAX_LOG_LINES=2000
+WAN_INTERFACE="wan"
+TARGET_NETWORKS="100.64.0.0/10 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
+CHECK_INTERVAL=120
+MAX_RESTARTS=3
+RESTART_COOLDOWN=300
+LOCK_TIMEOUT=300
+CONFEOF
+    echo -e "${GREEN}Конфигурация создана: ${CONFIG_DEST}${NC}"
+else
+    echo -e "${YELLOW}Конфигурация уже существует, пропускаем${NC}"
+fi
 
-# Unwanted network (optional)
-DEFAULT_UNWANTED="100.64.0.0/10"
-printf "Нежелательная сеть (CIDR) для логирования (Enter - пропустить) [%s]: " "$DEFAULT_UNWANTED"
-read_from_tty UNWANTED_NETWORK
-# если пусто - оставляем пустым
+# Установка init-скрипта
+echo "Установка init-скрипта для procd..."
+cat > "$INIT_DEST" << 'INITEOF'
+#!/bin/sh /etc/rc.common
 
-# Check interval
-DEFAULT_INTERVAL=60
-printf "Интервал проверки (секунд) [%s]: " "$DEFAULT_INTERVAL"
-read_from_tty CHECK_INTERVAL
-[ -z "$CHECK_INTERVAL" ] && CHECK_INTERVAL="$DEFAULT_INTERVAL"
+START=99
+USE_PROCD=1
+PROG=/usr/bin/check_wan_ip.sh
 
-# Restart delay
-DEFAULT_DELAY=60
-printf "Задержка после перезапуска интерфейса (секунд) [%s]: " "$DEFAULT_DELAY"
-read_from_tty RESTART_DELAY
-[ -z "$RESTART_DELAY" ] && RESTART_DELAY="$DEFAULT_DELAY"
+start_service() {
+    procd_open_instance
+    procd_set_param command /bin/sh "$PROG"
+    procd_set_param respawn 3600 5 5
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}
 
-# Log file
-DEFAULT_LOG="/var/log/wan_ip_check.log"
-printf "Файл лога [%s]: " "$DEFAULT_LOG"
-read_from_tty LOG_FILE
-[ -z "$LOG_FILE" ] && LOG_FILE="$DEFAULT_LOG"
+service_triggers() {
+    procd_add_reload_trigger "wan-ip-check"
+}
 
-# Max log lines
-DEFAULT_MAX_LINES=100
-printf "Максимальное количество строк в лог-файле [%s]: " "$DEFAULT_MAX_LINES"
-read_from_tty MAX_LOG_LINES
-[ -z "$MAX_LOG_LINES" ] && MAX_LOG_LINES="$DEFAULT_MAX_LINES"
+reload_service() {
+    stop
+    start
+}
+INITEOF
 
-# Создание конфигурационного файла
-CONFIG_FILE="/etc/wan-ip-check.conf"
-echo "Создание конфигурационного файла $CONFIG_FILE..."
-cat > "$CONFIG_FILE" << EOF
-# Configuration for WAN IP check script
-# Generated by install.sh on $(date)
+chmod +x "$INIT_DEST"
 
-WAN_INTERFACE="$WAN_INTERFACE"
-TARGET_NETWORK="$TARGET_NETWORK"
-UNWANTED_NETWORK="$UNWANTED_NETWORK"
-CHECK_INTERVAL="$CHECK_INTERVAL"
-RESTART_DELAY="$RESTART_DELAY"
-LOG_FILE="$LOG_FILE"
-MAX_LOG_LINES="$MAX_LOG_LINES"
-EOF
+# Включение и запуск сервиса
+echo "Активация автозапуска..."
+"$INIT_DEST" enable
 
-echo "Конфигурация сохранена."
+echo "Запуск сервиса..."
+"$INIT_DEST" start
 
-# Настройка автозапуска через rc.local
-echo "Настройка автозапуска через /etc/rc.local..."
-sed -i '/check_wan_ip.sh/d' /etc/rc.local
-sed -i "/exit 0/i /usr/bin/check_wan_ip.sh \&" /etc/rc.local
-
-# Запрос на немедленный запуск скрипта
-printf "Запустить скрипт сейчас? [y/N]: "
-read_from_tty RUN_NOW
-case "$RUN_NOW" in
-    [yY]|[yY][eE][sS])
-        echo "Запуск скрипта..."
-        /usr/bin/check_wan_ip.sh &
-        ;;
-    *)
-        echo "Скрипт не запущен. Он будет запущен автоматически после перезагрузки."
-        ;;
-esac
-
-echo "Установка завершена!"
-echo "Логи можно смотреть командой: logread | grep wan-ip-check"
-echo "Или tail -f $LOG_FILE"
-echo "Для изменения параметров отредактируйте $CONFIG_FILE и перезапустите скрипт."
+echo ""
+echo -e "${GREEN}=== Установка завершена успешно! ===${NC}"
+echo ""
+echo "Управление сервисом:"
+echo "  Статус:     /etc/init.d/wan-ip-check status"
+echo "  Запуск:     /etc/init.d/wan-ip-check start"
+echo "  Остановка:  /etc/init.d/wan-ip-check stop"
+echo "  Перезапуск: /etc/init.d/wan-ip-check restart"
+echo "  Лог:        logread -e wan-ip-check"
+echo "  Файл лога:  ${LOG_FILE:-/var/log/wan-ip-check.log}"
+echo ""
+echo "Конфигурация: /etc/wan-ip-check.conf"
