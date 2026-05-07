@@ -37,7 +37,7 @@ sh /tmp/install.sh
 Скрипт установки автоматически:
 
 - Проверит и установит зависимости (`ip`, `logger`, `curl`).
-- Скачает основной скрипт `/usr/bin/check_wan_ip.sh`.
+- Скачает основной скрипт `/usr/bin/wan-ip-check.sh`.
 - Создаст конфигурационный файл `/etc/wan-ip-check.conf` (если он отсутствует).
 - Установит init-скрипт `/etc/init.d/wan-ip-check` и активирует автозапуск через procd.
 - Запустит сервис.
@@ -96,10 +96,10 @@ sh /tmp/install.sh
 
 ```bash
 # Принудительная ротация логов
-/usr/bin/check_wan_ip.sh rotate
+/usr/bin/wan-ip-check.sh rotate
 
 # Просмотр текущего состояния (IP, lock, размер лога)
-/usr/bin/check_wan_ip.sh status
+/usr/bin/wan-ip-check.sh status
 ```
 
 ## Просмотр логов
@@ -141,7 +141,7 @@ grep "\[WARN\]" /var/log/wan-ip-check.log
 ### Формат записей лога
 
 ```
-[2026-05-07 14:30:00] [INFO] Скрипт check_wan_ip.sh запущен (интерфейс: wan)
+[2026-05-07 14:30:00] [INFO] Скрипт wan-ip-check.sh запущен (интерфейс: wan)
 [2026-05-07 14:30:01] [INFO] Текущий WAN IP: 100.87.45.23
 [2026-05-07 14:30:01] [WARN] Обнаружен приватный/CGNAT-адрес (100.87.45.23)
 [2026-05-07 14:30:01] [INFO] Перезапуск WAN-интерфейса (wan)...
@@ -169,8 +169,8 @@ grep "\[WARN\]" /var/log/wan-ip-check.log
 1. Скачайте основной скрипт:
 
    ```bash
-   curl -fsSL -o /usr/bin/check_wan_ip.sh https://raw.githubusercontent.com/Erridium/openwrt-wan-ip-check/main/check_wan_ip.sh
-   chmod +x /usr/bin/check_wan_ip.sh
+   curl -fsSL -o /usr/bin/wan-ip-check.sh https://raw.githubusercontent.com/Erridium/openwrt-wan-ip-check/main/wan-ip-check.sh
+   chmod +x /usr/bin/wan-ip-check.sh
    ```
 
 2. Создайте конфигурационный файл `/etc/wan-ip-check.conf`:
@@ -197,7 +197,7 @@ grep "\[WARN\]" /var/log/wan-ip-check.log
 
    START=99
    USE_PROCD=1
-   PROG=/usr/bin/check_wan_ip.sh
+   PROG=/usr/bin/wan-ip-check.sh
 
    start_service() {
        procd_open_instance
@@ -283,7 +283,7 @@ ip addr show
 
 ### 5. Ошибка "curl: (22) The requested URL returned error: 400"
 
-Проверьте, что ветка репозитория называется `main` (не `master`). Убедитесь, что файлы `check_wan_ip.sh` и `install.sh` существуют в корне репозитория.
+Проверьте, что ветка репозитория называется `main` (не `master`). Убедитесь, что файлы `wan-ip-check.sh` и `install.sh` существуют в корне репозитория.
 
 ---
 
