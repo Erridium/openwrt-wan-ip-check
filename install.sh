@@ -1,11 +1,11 @@
 #!/bin/sh
 # ============================================================
-# Установщик / Деинсталлятор check_wan_ip.sh для OpenWRT
-# Версия: 2.2 — с меню установки, обновления и удаления
+# Установщик / Деинсталлятор wan-ip-check.sh для OpenWRT
+# Версия: 2.3 — с меню установки, обновления и удаления
 # ============================================================
 set -e
 
-SCRIPT_NAME="check_wan_ip.sh"
+SCRIPT_NAME="wan-ip-check.sh"
 SCRIPT_DEST="/usr/bin/${SCRIPT_NAME}"
 CONFIG_DEST="/etc/wan-ip-check.conf"
 INIT_DEST="/etc/init.d/wan-ip-check"
@@ -205,7 +205,7 @@ CONFEOF
 
 START=99
 USE_PROCD=1
-PROG=/usr/bin/check_wan_ip.sh
+PROG=/usr/bin/wan-ip-check.sh
 
 start_service() {
     procd_open_instance
@@ -304,7 +304,7 @@ do_update() {
 
 START=99
 USE_PROCD=1
-PROG=/usr/bin/check_wan_ip.sh
+PROG=/usr/bin/wan-ip-check.sh
 
 start_service() {
     procd_open_instance
