@@ -1,7 +1,7 @@
 #!/bin/sh
 # ============================================================
 # wan-ip-check.sh - Мониторинг и сброс CGNAT-адресов для OpenWRT
-# Версия: 2.3 (полностью переработанная)
+# Версия: 2.2
 # ============================================================
 
 set -o pipefail
@@ -148,26 +148,27 @@ rotate_logs_if_needed() {
 get_wan_ip() {
     local wan_ip=""
 
-    # Метод 1: через ip (стандарт OpenWRT)
+    # Метод 1: через ip без фильтрации scope
     if command -v ip >/dev/null 2>&1; then
-        wan_ip=$(ip -4 addr show dev "$WAN_INTERFACE" scope global 2>/dev/null | \
-                 grep -oE 'inet ([0-9]{1,3}\.){3}[0-9]{1,3}' | awk '{print $2}')
+        wan_ip=$(ip -4 addr show dev "$WAN_INTERFACE" 2>/dev/null | \
+                 grep -oE 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | \
+                 awk '{print $2}' | head -n 1)
         if [ -n "$wan_ip" ] && [ "$wan_ip" != "127.0.0.1" ]; then
             echo "$wan_ip"
             return 0
         fi
     fi
 
-    # Метод 2: через /proc/net/if_inet6 (как запасной для IPv4-over-IPv6 туннелей)
-    if [ -f "/proc/net/if_inet6" ]; then
-        wan_ip=$(awk -v iface="$WAN_INTERFACE" '{
-            if ($6 == iface && $1 !~ /^fe80/) {
-                # Конвертация IPv6 в IPv4 для туннелей (если используется)
-                print "IPv6:" $1
-            }
-        }' /proc/net/if_inet6 2>/dev/null)
-        [ -n "$wan_ip" ] && echo "$wan_ip" && return 0
-    fi
+    # Метод 2: внешний сервис (fallback)
+    for service in "ifconfig.co" "ipinfo.io/ip" "icanhazip.com"; do
+        if command -v curl >/dev/null 2>&1; then
+            wan_ip=$(curl -fsSL --interface "$WAN_INTERFACE" "$service" 2>/dev/null)
+            if [ -n "$wan_ip" ] && echo "$wan_ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+                echo "$wan_ip"
+                return 0
+            fi
+        fi
+    done
 
     return 1
 }
@@ -188,13 +189,19 @@ is_private_or_cgnat_ip() {
         return 1
     fi
 
-    # Запасной метод: разбиваем IP на октеты и проверяем диапазоны
+    # Запасной метод: разбиваем IP на октеты (POSIX-совместимо)
     local o1 o2 o3 o4
-    IFS='.' read -r o1 o2 o3 o4 <<< "$ip"
+    o1=$(echo "$ip" | cut -d. -f1)
+    o2=$(echo "$ip" | cut -d. -f2)
+    o3=$(echo "$ip" | cut -d. -f3)
+    o4=$(echo "$ip" | cut -d. -f4)
 
     # Проверка на корректность октетов
     for octet in "$o1" "$o2" "$o3" "$o4"; do
-        if ! [ "$octet" -ge 0 ] 2>/dev/null || ! [ "$octet" -le 255 ] 2>/dev/null; then
+        case "$octet" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        if [ "$octet" -gt 255 ] 2>/dev/null; then
             return 1
         fi
     done
@@ -202,7 +209,6 @@ is_private_or_cgnat_ip() {
     for network in $networks; do
         case "$network" in
             100.64.0.0/10)
-                # CGNAT: 100.64.0.0 - 100.127.255.255
                 [ "$o1" -eq 100 ] && [ "$o2" -ge 64 ] && [ "$o2" -le 127 ] && return 0
                 ;;
             10.0.0.0/8)
