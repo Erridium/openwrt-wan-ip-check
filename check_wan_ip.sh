@@ -1,160 +1,364 @@
 #!/bin/sh
+# ============================================================
+# check_wan_ip.sh - Мониторинг и сброс CGNAT-адресов для OpenWRT
+# Версия: 2.0 (полностью переработанная)
+# ============================================================
 
-# Config file location
+set -o pipefail
+
+# --- Конфигурация по умолчанию (переопределяется из конфиг-файла) ---
 CONFIG_FILE="/etc/wan-ip-check.conf"
+LOG_FILE="/var/log/wan-ip-check.log"
+MAX_LOG_SIZE=512
+MAX_LOG_LINES=2000
+WAN_INTERFACE="wan"
+TARGET_NETWORKS="100.64.0.0/10 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
+CHECK_INTERVAL=120
+MAX_RESTARTS=3
+RESTART_COOLDOWN=300
+LOCK_TIMEOUT=300
 
-# Default values
-DEFAULT_WAN_INTERFACE="wan"
-DEFAULT_TARGET_NETWORK="109.108.32.0/19"
-DEFAULT_UNWANTED_NETWORK="100.64.0.0/10"
-DEFAULT_CHECK_INTERVAL=60
-DEFAULT_RESTART_DELAY=60
-DEFAULT_LOG_FILE="/var/log/wan_ip_check.log"
-DEFAULT_MAX_LOG_LINES=100
+# --- Lock-файл ---
+LOCK_FILE="/var/lock/wan-ip-check.lock"
 
-# Load configuration if exists
-if [ -f "$CONFIG_FILE" ]; then
-    . "$CONFIG_FILE"
-else
-    # Use defaults if no config
-    WAN_INTERFACE="$DEFAULT_WAN_INTERFACE"
-    TARGET_NETWORK="$DEFAULT_TARGET_NETWORK"
-    UNWANTED_NETWORK="$DEFAULT_UNWANTED_NETWORK"
-    CHECK_INTERVAL="$DEFAULT_CHECK_INTERVAL"
-    RESTART_DELAY="$DEFAULT_RESTART_DELAY"
-    LOG_FILE="$DEFAULT_LOG_FILE"
-    MAX_LOG_LINES="$DEFAULT_MAX_LOG_LINES"
-fi
+# --- Проверка зависимостей ---
+check_dependencies() {
+    local missing=""
+    for cmd in ip logger; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing="${missing} ${cmd}"
+        fi
+    done
+    if [ -n "$missing" ]; then
+        echo "ОШИБКА: Отсутствуют необходимые утилиты:${missing}" >&2
+        echo "Установите: opkg install iputils-logger" >&2
+        exit 1
+    fi
+}
 
-export WAN_INTERFACE TARGET_NETWORK UNWANTED_NETWORK CHECK_INTERVAL RESTART_DELAY LOG_FILE MAX_LOG_LINES
+# --- Парсинг конфигурационного файла (key=value) ---
+parse_config() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        return 0
+    fi
 
-# Variable to track the last logged IP status
-LAST_STABLE_IP=""
-STABLE_COUNT=0
+    while IFS='=' read -r key value; do
+        # Пропускаем пустые строки и комментарии
+        case "$key" in
+            ""|\#*) continue ;;
+        esac
 
-# logging func with rotation
+        # Удаляем пробелы, кавычки и комментарии в значении
+        value=$(echo "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^["'\'']//' -e 's/["'\'']$//' -e 's/[[:space:]]*#.*$//')
+
+        case "$key" in
+            LOG_FILE)         LOG_FILE="$value" ;;
+            MAX_LOG_SIZE)     MAX_LOG_SIZE="$value" ;;
+            MAX_LOG_LINES)    MAX_LOG_LINES="$value" ;;
+            WAN_INTERFACE)    WAN_INTERFACE="$value" ;;
+            TARGET_NETWORKS)  TARGET_NETWORKS="$value" ;;
+            CHECK_INTERVAL)   CHECK_INTERVAL="$value" ;;
+            MAX_RESTARTS)     MAX_RESTARTS="$value" ;;
+            RESTART_COOLDOWN) RESTART_COOLDOWN="$value" ;;
+            LOCK_TIMEOUT)     LOCK_TIMEOUT="$value" ;;
+            *)
+                logger -t "wan-ip-check" -p "daemon.warn" "Неизвестный параметр в конфиге: $key" 2>/dev/null
+                ;;
+        esac
+    done < "$file"
+}
+
+# --- Улучшенное логирование ---
 log_message() {
-    local message="$1"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    local log_entry="$timestamp - $message"
-    
-    # Add new entry to the log file
-    echo "$log_entry" >> "$LOG_FILE"
-    
-    # Rotate log file if it exceeds the maximum number of lines
-    local current_lines=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
-    if [ "$current_lines" -gt "$MAX_LOG_LINES" ]; then
-        # Calculate how many lines to remove
-        local lines_to_remove=$((current_lines - MAX_LOG_LINES))
-        # Create a temporary file with the last MAX_LOG_LINES lines
-        tail -n "$MAX_LOG_LINES" "$LOG_FILE" > "${LOG_FILE}.tmp"
-        mv "${LOG_FILE}.tmp" "$LOG_FILE"
+    local level="$1"
+    local message="$2"
+    local timestamp
+    local log_entry
+
+    timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    log_entry="[${timestamp}] [$(echo "$level" | tr '[:lower:]' '[:upper:]')] ${message}"
+
+    # Системный лог
+    logger -t "wan-ip-check" -p "daemon.${level}" "${message}" 2>/dev/null || true
+
+    # Файл лога
+    local log_dir
+    log_dir=$(dirname "$LOG_FILE")
+    if [ ! -d "$log_dir" ]; then
+        mkdir -p "$log_dir" 2>/dev/null || {
+            echo "[${timestamp}] [ERROR] Невозможно создать директорию лога: ${log_dir}" >&2
+            return 1
+        }
     fi
-    
-    # Also log to system logger
-    logger -t "wan-ip-check" "$message"
+
+    echo "$log_entry" >> "$LOG_FILE" 2>/dev/null || {
+        echo "[${timestamp}] [ERROR] Не удалось записать в файл лога: ${LOG_FILE}" >&2
+        return 1
+    }
+
+    rotate_logs_if_needed
 }
 
-# func that check ip in net without mask of interface
-check_ip_in_network() {
-    local ip=$1
-    local network=$2
-    
-    # split ip to addr and net
-    local network_ip=$(echo $network | cut -d'/' -f1)
-    local mask=$(echo $network | cut -d'/' -f2)
-    
-    # convert IP to numbers for comparison
-    local ip_num=$(echo $ip | awk -F'.' '{printf("%d\n", ($1 * 256^3) + ($2 * 256^2) + ($3 * 256) + $4)}')
-    local network_num=$(echo $network_ip | awk -F'.' '{printf("%d\n", ($1 * 256^3) + ($2 * 256^2) + ($3 * 256) + $4)}')
-    
-    # Calculating the mask
-    local mask_num=$((0xffffffff << (32 - $mask) & 0xffffffff))
-    
-    # Checking the network affiliation
-    local network_start=$((network_num & mask_num))
-    local ip_network=$((ip_num & mask_num))
-    
-    [ $ip_network -eq $network_start ]
-    return $?
+# --- Ротация логов ---
+rotate_logs_if_needed() {
+    [ ! -f "$LOG_FILE" ] && return 0
+
+    local log_size_kb log_lines need_rotation=0
+
+    log_size_kb=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+    log_size_kb=$(( log_size_kb / 1024 ))
+    log_lines=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+
+    [ "$log_size_kb" -gt "$MAX_LOG_SIZE" ] 2>/dev/null && need_rotation=1
+    [ "$log_lines" -gt "$MAX_LOG_LINES" ] 2>/dev/null && need_rotation=1
+
+    if [ "$need_rotation" -eq 1 ]; then
+        local temp_log="${LOG_FILE}.tmp.$$"
+        local keep_lines=$(( MAX_LOG_LINES / 2 ))
+        [ "$keep_lines" -lt 100 ] && keep_lines=100
+
+        tail -n "$keep_lines" "$LOG_FILE" > "$temp_log" 2>/dev/null && {
+            mv "$temp_log" "$LOG_FILE" 2>/dev/null || {
+                rm -f "$temp_log" 2>/dev/null
+                echo "[$(date "+%Y-%m-%d %H:%M:%S")] [ERROR] Ошибка ротации лога" >> "$LOG_FILE" 2>/dev/null
+            }
+        } || {
+            rm -f "$temp_log" 2>/dev/null
+            echo "[$(date "+%Y-%m-%d %H:%M:%S")] [ERROR] Ошибка создания временного файла при ротации" >&2
+        }
+
+        if [ -f "$LOG_FILE" ]; then
+            log_size_kb=$(wc -c < "$LOG_FILE" 2>/dev/null)
+            log_size_kb=$(( log_size_kb / 1024 ))
+            if [ "$log_size_kb" -gt "$(( MAX_LOG_SIZE * 2 ))" ]; then
+                tail -n 100 "$LOG_FILE" > "${LOG_FILE}.emergency" 2>/dev/null && \
+                mv "${LOG_FILE}.emergency" "$LOG_FILE" 2>/dev/null
+                echo "[$(date "+%Y-%m-%d %H:%M:%S")] [WARN] Экстренная ротация лога" >> "$LOG_FILE" 2>/dev/null
+            fi
+        fi
+
+        local rot_msg="Ротация логов выполнена (size=${log_size_kb}K, lines=${log_lines})"
+        logger -t "wan-ip-check" -p "daemon.info" "${rot_msg}" 2>/dev/null || true
+        echo "[$(date "+%Y-%m-%d %H:%M:%S")] [INFO] ${rot_msg}" >> "$LOG_FILE" 2>/dev/null
+    fi
 }
 
-# The function of getting the current IP WAN interface
+# --- Получение WAN IP (современный метод) ---
 get_wan_ip() {
-    # We are trying to get an IP through ubus (the preferred method for OpenWRT)
-    if command -v ubus >/dev/null 2>&1; then
-        ubus call network.interface.$WAN_INTERFACE status | jsonfilter -e '@["ipv4-address"][0].address'
+    local wan_ip=""
+
+    # Метод 1: через ip (стандарт OpenWRT)
+    if command -v ip >/dev/null 2>&1; then
+        wan_ip=$(ip -4 addr show dev "$WAN_INTERFACE" scope global 2>/dev/null | \
+                 grep -oE 'inet ([0-9]{1,3}\.){3}[0-9]{1,3}' | awk '{print $2}')
+        if [ -n "$wan_ip" ] && [ "$wan_ip" != "127.0.0.1" ]; then
+            echo "$wan_ip"
+            return 0
+        fi
+    fi
+
+    # Метод 2: через /proc/net/if_inet6 (как запасной для IPv4-over-IPv6 туннелей)
+    if [ -f "/proc/net/if_inet6" ]; then
+        wan_ip=$(awk -v iface="$WAN_INTERFACE" '{
+            if ($6 == iface && $1 !~ /^fe80/) {
+                # Конвертация IPv6 в IPv4 для туннелей (если используется)
+                print "IPv6:" $1
+            }
+        }' /proc/net/if_inet6 2>/dev/null)
+        [ -n "$wan_ip" ] && echo "$wan_ip" && return 0
+    fi
+
+    return 1
+}
+
+# --- Проверка IP на принадлежность к CGNAT/частным сетям ---
+is_private_or_cgnat_ip() {
+    local ip="$1"
+    local networks="$2"
+    local network
+
+    # Используем ipcalc если доступен
+    if command -v ipcalc >/dev/null 2>&1; then
+        for network in $networks; do
+            if ipcalc -c "$ip" "$network" >/dev/null 2>&1; then
+                return 0
+            fi
+        done
+        return 1
+    fi
+
+    # Запасной метод: разбиваем IP на октеты и проверяем диапазоны
+    local o1 o2 o3 o4
+    IFS='.' read -r o1 o2 o3 o4 <<< "$ip"
+
+    # Проверка на корректность октетов
+    for octet in "$o1" "$o2" "$o3" "$o4"; do
+        if ! [ "$octet" -ge 0 ] 2>/dev/null || ! [ "$octet" -le 255 ] 2>/dev/null; then
+            return 1
+        fi
+    done
+
+    for network in $networks; do
+        case "$network" in
+            100.64.0.0/10)
+                # CGNAT: 100.64.0.0 - 100.127.255.255
+                [ "$o1" -eq 100 ] && [ "$o2" -ge 64 ] && [ "$o2" -le 127 ] && return 0
+                ;;
+            10.0.0.0/8)
+                [ "$o1" -eq 10 ] && return 0
+                ;;
+            172.16.0.0/12)
+                [ "$o1" -eq 172 ] && [ "$o2" -ge 16 ] && [ "$o2" -le 31 ] && return 0
+                ;;
+            192.168.0.0/16)
+                [ "$o1" -eq 192 ] && [ "$o2" -eq 168 ] && return 0
+                ;;
+        esac
+    done
+
+    return 1
+}
+
+# --- Перезапуск WAN-интерфейса ---
+restart_wan() {
+    log_message "info" "Перезапуск WAN-интерфейса (${WAN_INTERFACE})..."
+
+    if command -v ifdown >/dev/null 2>&1 && command -v ifup >/dev/null 2>&1; then
+        ifdown "$WAN_INTERFACE" 2>/dev/null
+        sleep 2
+        ifup "$WAN_INTERFACE" 2>/dev/null
+        sleep 10
+        return 0
     else
-        # Fallback method
-        ifconfig $WAN_INTERFACE 2>/dev/null | grep 'inet addr' | awk '{print $2}' | cut -d':' -f2
+        log_message "error" "Команды ifdown/ifup не найдены"
+        return 1
     fi
 }
 
-# The function of restarting the WAN interface
-restart_wan() {
-    log_message "Restarting the interface $WAN_INTERFACE"
-    
-    # Stopping the interface
-    ifdown $WAN_INTERFACE
-    sleep 5
-    
-    # Launching the interface
-    ifup $WAN_INTERFACE
-    
-    log_message "interface $WAN_INTERFACE restarted, waiting $RESTART_DELAY seconds..."
-    sleep $RESTART_DELAY
+# --- Lock-файл с проверкой целостности ---
+acquire_lock() {
+    if mkdir "$LOCK_FILE" 2>/dev/null; then
+        echo "$$" > "${LOCK_FILE}/pid"
+        echo "$(date +%s)" > "${LOCK_FILE}/timestamp"
+        trap 'release_lock' EXIT INT TERM HUP
+        return 0
+    fi
+
+    local lock_pid lock_timestamp current_time
+    lock_pid=$(cat "${LOCK_FILE}/pid" 2>/dev/null || echo "0")
+    lock_timestamp=$(cat "${LOCK_FILE}/timestamp" 2>/dev/null || echo "0")
+    current_time=$(date +%s)
+
+    if [ "$lock_pid" -gt 1 ] 2>/dev/null && kill -0 "$lock_pid" 2>/dev/null; then
+        local proc_cmd
+        proc_cmd=$(cat "/proc/${lock_pid}/cmdline" 2>/dev/null | tr '\0' ' ' || echo "")
+        if echo "$proc_cmd" | grep -q "check_wan_ip"; then
+            log_message "warn" "Скрипт уже выполняется (PID: ${lock_pid})"
+            return 1
+        fi
+    fi
+
+    if [ $(( current_time - lock_timestamp )) -gt "$LOCK_TIMEOUT" ]; then
+        log_message "warn" "Обнаружен устаревший lock-файл. Принудительное снятие."
+        release_lock
+        acquire_lock
+        return $?
+    fi
+
+    log_message "error" "Lock-файл существует, но процесс ${lock_pid} не найден. Ожидание."
+    return 1
 }
 
-# Main function
-main() {
-    log_message "Starting the verification of the WAN interface IP address"
-    log_message "Target network: $TARGET_NETWORK"
-    [ -n "$UNWANTED_NETWORK" ] && log_message "Unwanted network: $UNWANTED_NETWORK"
-    log_message "Max log lines: $MAX_LOG_LINES"
-    
+release_lock() {
+    if [ -d "$LOCK_FILE" ]; then
+        rm -rf "$LOCK_FILE" 2>/dev/null
+    fi
+    trap - EXIT INT TERM HUP
+}
+
+# --- Основной цикл ---
+main_loop() {
+    local last_stable_ip=""
+    local restart_count=0
+
+    log_message "info" "Скрипт check_wan_ip.sh запущен (интерфейс: ${WAN_INTERFACE})"
+
     while true; do
-        # Getting the current IP address
-        CURRENT_IP=$(get_wan_ip)
-        
-        if [ -z "$CURRENT_IP" ]; then
-            log_message "Couldn't get the interface's IP address $WAN_INTERFACE"
-            sleep $CHECK_INTERVAL
+        if ! acquire_lock; then
+            sleep 60
             continue
         fi
-        
-        # Checking whether you belong to the target network
-        if check_ip_in_network "$CURRENT_IP" "$TARGET_NETWORK"; then
-            # IP is in target network - stable state
-            if [ "$CURRENT_IP" != "$LAST_STABLE_IP" ]; then
-                # IP changed or first check - log it
-                log_message "IP address $CURRENT_IP belongs to the network $TARGET_NETWORK"
-                LAST_STABLE_IP="$CURRENT_IP"
-                STABLE_COUNT=1
-            else
-                # Same stable IP - log only once every 10 checks to avoid flooding
-                STABLE_COUNT=$((STABLE_COUNT + 1))
-                if [ $STABLE_COUNT -eq 10 ]; then
-                    log_message "IP address $CURRENT_IP still in target network (logged once per 10 checks)"
-                    STABLE_COUNT=0
-                fi
-            fi
-        else
-            # IP is NOT in target network - always log this
-            log_message "IP address $CURRENT_IP DOES NOT belong to the network $TARGET_NETWORK"
-            LAST_STABLE_IP=""
-            STABLE_COUNT=0
-            
-            # Additional information: check if the IP belongs to the unwanted network (if defined)
-            if [ -n "$UNWANTED_NETWORK" ] && check_ip_in_network "$CURRENT_IP" "$UNWANTED_NETWORK"; then
-                log_message "An IP has been detected from the unwanted network: $UNWANTED_NETWORK"
-            fi
-            
-            restart_wan
+
+        local current_ip
+        current_ip=$(get_wan_ip)
+
+        if [ -z "$current_ip" ]; then
+            log_message "error" "Не удалось получить IP-адрес интерфейса ${WAN_INTERFACE}"
+            release_lock
+            sleep 30
+            continue
         fi
-        
-        sleep $CHECK_INTERVAL
+
+        if [ "$current_ip" != "$last_stable_ip" ]; then
+            log_message "info" "Текущий WAN IP: ${current_ip}"
+
+            if is_private_or_cgnat_ip "$current_ip" "$TARGET_NETWORKS"; then
+                log_message "warn" "Обнаружен приватный/CGNAT-адрес (${current_ip})"
+
+                if [ "$restart_count" -ge "$MAX_RESTARTS" ]; then
+                    log_message "error" "Достигнут лимит перезапусков (${MAX_RESTARTS}). Охлаждение на ${RESTART_COOLDOWN} сек."
+                    release_lock
+                    sleep "$RESTART_COOLDOWN"
+                    restart_count=0
+                    continue
+                fi
+
+                if restart_wan; then
+                    restart_count=$(( restart_count + 1 ))
+                    log_message "info" "Перезапуск выполнен (попытка ${restart_count}/${MAX_RESTARTS})"
+                    sleep 15
+                    release_lock
+                    continue
+                else
+                    log_message "error" "Ошибка при перезапуске WAN"
+                fi
+            else
+                last_stable_ip="$current_ip"
+                restart_count=0
+                log_message "info" "Получен публичный IP: ${current_ip}"
+            fi
+        fi
+
+        release_lock
+        sleep "$CHECK_INTERVAL"
     done
 }
 
-# Launching the main function
-main
+# --- Точка входа ---
+check_dependencies
+parse_config "$CONFIG_FILE"
+
+case "${1:-}" in
+    rotate)
+        rotate_logs_if_needed
+        echo "Ротация логов выполнена."
+        exit 0
+        ;;
+    status)
+        current_ip=$(get_wan_ip)
+        echo "Статус скрипта check_wan_ip:"
+        echo "  Интерфейс:      ${WAN_INTERFACE}"
+        echo "  Текущий IP:     ${current_ip:-недоступен}"
+        echo "  Лог-файл:       ${LOG_FILE} ($(wc -l < "$LOG_FILE" 2>/dev/null || echo 0) строк)"
+        if [ -d "$LOCK_FILE" ]; then
+            echo "  Lock:           захвачен (PID: $(cat "${LOCK_FILE}/pid" 2>/dev/null))"
+        else
+            echo "  Lock:           свободен"
+        fi
+        exit 0
+        ;;
+    *)
+        main_loop
+        ;;
+esac
