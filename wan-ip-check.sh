@@ -77,7 +77,8 @@ log_message() {
     local log_entry
 
     timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    log_entry="[${timestamp}] [$(echo "$level" | tr '[:lower:]' '[:upper:]')] ${message}"
+    #log_entry="[${timestamp}] [$(echo "$level" | tr '[:lower:]' '[:upper:]')] ${message}"
+    log_entry="[${timestamp}] [$(echo "$level" | tr 'a-z' 'A-Z')] ${message}"
 
     # Системный лог
     logger -t "wan-ip-check" -p "daemon.${level}" "${message}" 2>/dev/null || true
