@@ -1,9 +1,9 @@
 #!/bin/sh
 # ============================================================
 # Установщик / Деинсталлятор wan-ip-check.sh для OpenWRT
-# Версия: 2.3 — с меню установки, обновления и удаления
+# Версия: 2.4 — с оффлайн режимом установки
 # ============================================================
-set -e
+set -o pipefail 2>/dev/null || true
 
 SCRIPT_NAME="wan-ip-check.sh"
 SCRIPT_DEST="/usr/bin/${SCRIPT_NAME}"
@@ -29,6 +29,13 @@ NC='\033[0m'
 check_installed() {
     [ -f "$SCRIPT_DEST" ] && return 0
     [ -f "$INIT_DEST" ] && return 0
+    return 1
+}
+
+# --- Проверка наличия файлов в локальной директории ---
+check_local_files() {
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    [ -f "${SCRIPT_DIR}/${SCRIPT_NAME}" ] && return 0
     return 1
 }
 
@@ -133,8 +140,56 @@ select_wan_interface() {
 
 # --- Установка ---
 do_install() {
+    # Проверка наличия файлов в локальной директории
+    echo -e "${CYAN}▶ Проверка наличия файлов в локальной директории...${NC}"
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    LOCAL_FILES_EXIST=false
+    
+    if [ -f "${SCRIPT_DIR}/${SCRIPT_NAME}" ]; then
+        echo -e "${GREEN}✓ Обнаружен локальный файл: ${SCRIPT_DIR}/${SCRIPT_NAME}${NC}"
+        LOCAL_FILES_EXIST=true
+    fi
+    
+    echo -e "${GREEN}✓ Проверка завершена${NC}\n"
+
+    # Выбор режима установки
+    if [ "$LOCAL_FILES_EXIST" = true ]; then
+        echo -e "${BOLD}Выберите режим установки:${NC}"
+        echo "  1. Онлайн установка (скачивание с GitHub)"
+        echo "  2. Оффлайн установка (использование локальных файлов)"
+        echo ""
+        printf "${CYAN}Ваш выбор [1-2]: ${NC}"
+        read -r install_mode
+        
+        case "$install_mode" in
+            1)
+                echo -e "${CYAN}▶ Выбрана онлайн установка${NC}\n"
+                ;;
+            2)
+                echo -e "${CYAN}▶ Выбрана оффлайн установка${NC}\n"
+                ;;
+            *)
+                echo -e "${RED}Неверный выбор. Выполняется онлайн установка.${NC}\n"
+                install_mode=1
+                ;;
+        esac
+    else
+        echo -e "${YELLOW}Локальные файлы не обнаружены. Выполняется онлайн установка.${NC}\n"
+        install_mode=1
+    fi
+
     # Проверка зависимостей
     echo -e "${CYAN}▶ Проверка зависимостей...${NC}"
+    
+    cmd_to_pkg() {
+        case "$1" in
+            ip)     echo "ip-full" ;;
+            logger) echo "busybox" ;;
+            curl)   echo "curl" ;;
+            *)      echo "$1" ;;
+        esac
+    }
+    
     MISSING=""
     for cmd in ip logger curl; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -143,23 +198,56 @@ do_install() {
     done
 
     if [ -n "$MISSING" ]; then
-        echo -e "${YELLOW}Установка недостающих пакетов:${MISSING}${NC}"
-        opkg update
-        for pkg in $MISSING; do
-            opkg install "$pkg"
-        done
+        if [ "$install_mode" = "2" ]; then
+            echo -e "${YELLOW}Обнаружены недостающие пакеты:${MISSING}${NC}"
+            INSTALL_FROM=""
+            NOT_FOUND=""
+            for cmd in $MISSING; do
+                pkg=$(cmd_to_pkg "$cmd")
+                ipk_file=$(ls "${SCRIPT_DIR}/${pkg}"*.ipk 2>/dev/null | head -n 1)
+                if [ -n "$ipk_file" ]; then
+                    echo -e "  ${GREEN}✓ Найден: ${ipk_file}${NC}"
+                    INSTALL_FROM="${INSTALL_FROM} ${ipk_file}"
+                else
+                    echo -e "  ${RED}✗ Не найден .ipk для: ${pkg}${NC}"
+                    NOT_FOUND="${NOT_FOUND} ${cmd}"
+                fi
+            done
+            if [ -n "$NOT_FOUND" ]; then
+                echo -e "${RED}Не удалось найти .ipk файлы для:${NOT_FOUND}${NC}"
+                echo -e "${YELLOW}Установите их вручную или переключитесь на онлайн-режим.${NC}"
+                exit 1
+            fi
+            for ipk in $INSTALL_FROM; do
+                opkg install "$ipk"
+            done
+        else
+            echo -e "${YELLOW}Установка недостающих пакетов:${MISSING}${NC}"
+            opkg update
+            for cmd in $MISSING; do
+                pkg=$(cmd_to_pkg "$cmd")
+                opkg install "$pkg"
+            done
+        fi
     fi
     echo -e "${GREEN}✓ Зависимости проверены${NC}\n"
 
     # Выбор интерфейса
     select_wan_interface
 
-    # Скачивание основного скрипта
-    echo -e "${CYAN}▶ Загрузка ${SCRIPT_NAME}...${NC}"
-    curl -fsSL "${GITHUB_BASE}/${SCRIPT_NAME}" -o "${SCRIPT_DEST}.tmp" || {
-        echo -e "${RED}Ошибка загрузки скрипта. Проверьте подключение к интернету.${NC}"
-        exit 1
-    }
+    # Установка основного скрипта
+    echo -e "${CYAN}▶ Установка ${SCRIPT_NAME}...${NC}"
+    
+    if [ "$install_mode" = "2" ] && [ -f "${SCRIPT_DIR}/${SCRIPT_NAME}" ]; then
+        # Оффлайн установка из локальной директории
+        cp "${SCRIPT_DIR}/${SCRIPT_NAME}" "${SCRIPT_DEST}.tmp"
+    else
+        # Онлайн установка
+        curl -fsSL "${GITHUB_BASE}/${SCRIPT_NAME}" -o "${SCRIPT_DEST}.tmp" || {
+            echo -e "${RED}Ошибка загрузки скрипта. Проверьте подключение к интернету.${NC}"
+            exit 1
+        }
+    fi
 
     if head -n 1 "${SCRIPT_DEST}.tmp" | grep -q "^#!/bin/sh"; then
         mv "${SCRIPT_DEST}.tmp" "${SCRIPT_DEST}"
@@ -278,13 +366,58 @@ do_update() {
         echo -e "${GREEN}✓ Текущий интерфейс: ${old_wan_interface}${NC}"
     fi
     
-    # Скачивание
+    # Проверка наличия файлов в локальной директории
+    echo -e "${CYAN}▶ Проверка наличия файлов в локальной директории...${NC}"
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    LOCAL_FILES_EXIST=false
+    
+    if [ -f "${SCRIPT_DIR}/${SCRIPT_NAME}" ]; then
+        echo -e "${GREEN}✓ Обнаружен локальный файл: ${SCRIPT_DIR}/${SCRIPT_NAME}${NC}"
+        LOCAL_FILES_EXIST=true
+    fi
+    
+    echo -e "${GREEN}✓ Проверка завершена${NC}\n"
+
+    # Выбор режима обновления
+    if [ "$LOCAL_FILES_EXIST" = true ]; then
+        echo -e "${BOLD}Выберите режим обновления:${NC}"
+        echo "  1. Онлайн обновление (скачивание с GitHub)"
+        echo "  2. Оффлайн обновление (использование локальных файлов)"
+        echo ""
+        printf "${CYAN}Ваш выбор [1-2]: ${NC}"
+        read -r update_mode
+        
+        case "$update_mode" in
+            1)
+                echo -e "${CYAN}▶ Выбрано онлайн обновление${NC}\n"
+                ;;
+            2)
+                echo -e "${CYAN}▶ Выбрано оффлайн обновление${NC}\n"
+                ;;
+            *)
+                echo -e "${RED}Неверный выбор. Выполняется онлайн обновление.${NC}\n"
+                update_mode=1
+                ;;
+        esac
+    else
+        echo -e "${YELLOW}Локальные файлы не обнаружены. Выполняется онлайн обновление.${NC}\n"
+        update_mode=1
+    fi
+
+    # Обновление основного скрипта
     echo -e "${CYAN}▶ Загрузка новой версии...${NC}"
-    curl -fsSL "${GITHUB_BASE}/${SCRIPT_NAME}" -o "${SCRIPT_DEST}.tmp" || {
-        echo -e "${RED}Ошибка загрузки.${NC}"
-        [ -f "$INIT_DEST" ] && "$INIT_DEST" start 2>/dev/null || true
-        exit 1
-    }
+    
+    if [ "$update_mode" = "2" ] && [ -f "${SCRIPT_DIR}/${SCRIPT_NAME}" ]; then
+        # Оффлайн обновление из локальной директории
+        cp "${SCRIPT_DIR}/${SCRIPT_NAME}" "${SCRIPT_DEST}.tmp"
+    else
+        # Онлайн обновление
+        curl -fsSL "${GITHUB_BASE}/${SCRIPT_NAME}" -o "${SCRIPT_DEST}.tmp" || {
+            echo -e "${RED}Ошибка загрузки.${NC}"
+            [ -f "$INIT_DEST" ] && "$INIT_DEST" start 2>/dev/null || true
+            exit 1
+        }
+    fi
     
     if head -n 1 "${SCRIPT_DEST}.tmp" | grep -q "^#!/bin/sh"; then
         mv "${SCRIPT_DEST}.tmp" "${SCRIPT_DEST}"
