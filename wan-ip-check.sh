@@ -384,7 +384,7 @@ case "${1:-}" in
         exit 0
         ;;
     test-restart)
-        local device="${WAN_DEVICE:-$WAN_INTERFACE}"
+        device="${WAN_DEVICE:-$WAN_INTERFACE}"
         echo "=== Тест перезапуска WAN-интерфейса ==="
         echo "Интерфейс (IP): ${WAN_INTERFACE}"
         echo "Устройство (ifdown/ifup): ${device}"
