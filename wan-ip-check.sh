@@ -1,7 +1,7 @@
 #!/bin/sh
 # ============================================================
 # wan-ip-check.sh - Мониторинг и сброс CGNAT-адресов для OpenWRT
-# Версия: 2.3
+# Версия: 2.5
 # ============================================================
 
 set -o pipefail
@@ -12,6 +12,7 @@ LOG_FILE="/var/log/wan-ip-check.log"
 MAX_LOG_SIZE=512
 MAX_LOG_LINES=2000
 WAN_INTERFACE="wan"
+WAN_DEVICE=""
 TARGET_NETWORKS="100.64.0.0/10 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
 CHECK_INTERVAL=120
 MAX_RESTARTS=3
@@ -57,6 +58,7 @@ parse_config() {
             MAX_LOG_SIZE)     MAX_LOG_SIZE="$value" ;;
             MAX_LOG_LINES)    MAX_LOG_LINES="$value" ;;
             WAN_INTERFACE)    WAN_INTERFACE="$value" ;;
+            WAN_DEVICE)       WAN_DEVICE="$value" ;;
             TARGET_NETWORKS)  TARGET_NETWORKS="$value" ;;
             CHECK_INTERVAL)   CHECK_INTERVAL="$value" ;;
             MAX_RESTARTS)     MAX_RESTARTS="$value" ;;
@@ -229,14 +231,42 @@ is_private_or_cgnat_ip() {
 
 # --- Перезапуск WAN-интерфейса ---
 restart_wan() {
-    log_message "info" "Перезапуск WAN-интерфейса (${WAN_INTERFACE})..."
+    local device="${WAN_DEVICE:-$WAN_INTERFACE}"
+    log_message "info" "Перезапуск WAN-интерфейса (${device})..."
 
     if command -v ifdown >/dev/null 2>&1 && command -v ifup >/dev/null 2>&1; then
-        ifdown "$WAN_INTERFACE" 2>/dev/null
+        local ifdown_out ifdown_rc ifup_out ifup_rc
+
+        ifdown_out=$(ifdown "$device" 2>&1)
+        ifdown_rc=$?
+        log_message "info" "ifdown ${device} (rc=${ifdown_rc}): ${ifdown_out}"
+
         sleep 2
-        ifup "$WAN_INTERFACE" 2>/dev/null
-        sleep 10
-        return 0
+
+        ifup_out=$(ifup "$device" 2>&1)
+        ifup_rc=$?
+        log_message "info" "ifup ${device} (rc=${ifup_rc}): ${ifup_out}"
+
+        if [ "$ifdown_rc" -ne 0 ] || [ "$ifup_rc" -ne 0 ]; then
+            log_message "warn" "ifdown/ifup завершились с ошибками (ifdown_rc=${ifdown_rc}, ifup_rc=${ifup_rc})"
+            return 1
+        fi
+
+        log_message "info" "Ожидание установки соединения..."
+        local wait_ip=""
+        local attempt=0
+        while [ "$attempt" -lt 12 ]; do
+            sleep 5
+            attempt=$(( attempt + 1 ))
+            wait_ip=$(get_wan_ip)
+            if [ -n "$wait_ip" ]; then
+                log_message "info" "IP получен через ${attempt}x5 сек: ${wait_ip}"
+                return 0
+            fi
+        done
+
+        log_message "warn" "IP не получен за 60 сек. Интерфейс может быть не готов."
+        return 1
     else
         log_message "error" "Команды ifdown/ifup не найдены"
         return 1
@@ -364,6 +394,33 @@ case "${1:-}" in
             echo "  Lock:           свободен"
         fi
         exit 0
+        ;;
+    test-restart)
+        device="${WAN_DEVICE:-$WAN_INTERFACE}"
+        echo "=== Тест перезапуска WAN-интерфейса ==="
+        echo "Интерфейс (IP): ${WAN_INTERFACE}"
+        echo "Устройство (ifdown/ifup): ${device}"
+        echo ""
+        ip_before=$(get_wan_ip)
+        echo "IP до перезапуска: ${ip_before:-недоступен}"
+        echo ""
+        log_message "info" "Тестовый перезапуск запущен вручную"
+        restart_wan
+        rc=$?
+        echo ""
+        echo "Код возврата restart_wan: ${rc}"
+        ip_after=$(get_wan_ip)
+        echo "IP после перезапуска: ${ip_after:-недоступен}"
+        echo ""
+        if [ "$ip_before" = "$ip_after" ]; then
+            echo "ВНИМАНИЕ: IP не изменился!"
+        else
+            echo "IP успешно изменён."
+        fi
+        echo ""
+        echo "Последние записи лога:"
+        tail -10 "$LOG_FILE" 2>/dev/null || echo "(лог пуст)"
+        exit $rc
         ;;
     *)
         main_loop

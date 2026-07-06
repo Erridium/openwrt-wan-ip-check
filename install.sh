@@ -1,7 +1,7 @@
 #!/bin/sh
 # ============================================================
 # Установщик / Деинсталлятор wan-ip-check.sh для OpenWRT
-# Версия: 2.4 — с оффлайн режимом установки
+# Версия: 2.5 — с оффлайн режимом установки
 # ============================================================
 set -o pipefail 2>/dev/null || true
 
@@ -262,12 +262,21 @@ do_install() {
     # Создание конфигурации
     echo ""
     echo -e "${CYAN}▶ Создание конфигурации...${NC}"
+    
+    # Определяем WAN_DEVICE для ifdown/ifup
+    WAN_DEVICE=""
+    case "$WAN_INTERFACE" in
+        pppoe-*) WAN_DEVICE="${WAN_INTERFACE#pppoe-}" ;;
+        *)       WAN_DEVICE="$WAN_INTERFACE" ;;
+    esac
+    
     if [ ! -f "$CONFIG_DEST" ]; then
         cat > "$CONFIG_DEST" << CONFEOF
 LOG_FILE="${LOG_FILE}"
 MAX_LOG_SIZE=512
 MAX_LOG_LINES=2000
 WAN_INTERFACE="${WAN_INTERFACE}"
+WAN_DEVICE="${WAN_DEVICE}"
 TARGET_NETWORKS="100.64.0.0/10 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
 CHECK_INTERVAL=120
 MAX_RESTARTS=3
@@ -481,13 +490,32 @@ INITEOF
         migrate_param "LOCK_TIMEOUT" "300"
         migrate_param "LOG_FILE" '"/var/log/wan-ip-check.log"'
         
+        # Автоопределение WAN_DEVICE если не задан
+        if ! grep -q "^WAN_DEVICE=" "$CONFIG_DEST" 2>/dev/null; then
+            local current_iface
+            current_iface=$(grep "^WAN_INTERFACE=" "$CONFIG_DEST" 2>/dev/null | sed 's/^WAN_INTERFACE=//' | tr -d '"' || echo "wan")
+            local auto_device=""
+            case "$current_iface" in
+                pppoe-*) auto_device="${current_iface#pppoe-}" ;;
+                *)       auto_device="$current_iface" ;;
+            esac
+            echo "WAN_DEVICE=\"${auto_device}\"" >> "$CONFIG_DEST"
+            echo -e "${YELLOW}  + Добавлен параметр: WAN_DEVICE=${auto_device}${NC}"
+        fi
+        
         echo -e "${GREEN}✓ Конфигурация проверена${NC}"
     else
+        local auto_device=""
+        case "$old_wan_interface" in
+            pppoe-*) auto_device="${old_wan_interface#pppoe-}" ;;
+            *)       auto_device="$old_wan_interface" ;;
+        esac
         cat > "$CONFIG_DEST" << CONFEOF
 LOG_FILE="/var/log/wan-ip-check.log"
 MAX_LOG_SIZE=512
 MAX_LOG_LINES=2000
 WAN_INTERFACE="${old_wan_interface}"
+WAN_DEVICE="${auto_device}"
 TARGET_NETWORKS="100.64.0.0/10 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
 CHECK_INTERVAL=120
 MAX_RESTARTS=3
