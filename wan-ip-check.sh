@@ -247,14 +247,26 @@ restart_wan() {
         ifup_rc=$?
         log_message "info" "ifup ${device} (rc=${ifup_rc}): ${ifup_out}"
 
-        sleep 10
-
         if [ "$ifdown_rc" -ne 0 ] || [ "$ifup_rc" -ne 0 ]; then
             log_message "warn" "ifdown/ifup завершились с ошибками (ifdown_rc=${ifdown_rc}, ifup_rc=${ifup_rc})"
             return 1
         fi
 
-        return 0
+        log_message "info" "Ожидание установки соединения..."
+        local wait_ip=""
+        local attempt=0
+        while [ "$attempt" -lt 12 ]; do
+            sleep 5
+            attempt=$(( attempt + 1 ))
+            wait_ip=$(get_wan_ip)
+            if [ -n "$wait_ip" ]; then
+                log_message "info" "IP получен через ${attempt}x5 сек: ${wait_ip}"
+                return 0
+            fi
+        done
+
+        log_message "warn" "IP не получен за 60 сек. Интерфейс может быть не готов."
+        return 1
     else
         log_message "error" "Команды ifdown/ifup не найдены"
         return 1
